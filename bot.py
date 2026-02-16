@@ -2,7 +2,8 @@ import os
 import logging
 import requests
 import json
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import time
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -14,27 +15,27 @@ from telegram.ext import (
 from flask import Flask
 from threading import Thread
 
-# Logging setup
+# ==================== Logging Setup ====================
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
-# Environment Variables
+# ==================== Config ====================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 ZYLA_API_KEY = os.environ.get("ZYLA_API_KEY", "12368|FQZM8X1GtUdl98NngHB9tcM2Ff5caNkaoyiXAF7E")
 PORT = int(os.environ.get("PORT", 10000))
+BOT_USERNAME = "@NewSocialDLBot"
 
-# Zyla API URL
 ZYLA_API_URL = "https://zylalabs.com/api/4146/facebook+download+api/7134/downloader"
 
-# ==================== Flask Keep-Alive Server ====================
+# ==================== Flask Keep-Alive ====================
 app_flask = Flask(__name__)
 
 @app_flask.route("/")
 def home():
-    return "✅ Facebook Video Downloader Bot is Running!"
+    return "Bot is alive!", 200
 
 @app_flask.route("/health")
 def health():
@@ -46,29 +47,19 @@ def run_flask():
 # ==================== Helper Functions ====================
 
 def is_facebook_url(url: str) -> bool:
-    """চেক করে যে URL টি Facebook এর কিনা"""
     fb_domains = [
-        "facebook.com",
-        "fb.com",
-        "fb.watch",
-        "www.facebook.com",
-        "m.facebook.com",
-        "web.facebook.com",
+        "facebook.com", "fb.com", "fb.watch",
+        "www.facebook.com", "m.facebook.com", "web.facebook.com",
     ]
-    for domain in fb_domains:
-        if domain in url:
-            return True
-    return False
+    return any(domain in url.lower() for domain in fb_domains)
 
 
 def fetch_video_data(fb_url: str) -> dict:
-    """Zyla API থেকে ভিডিও ডাটা নিয়ে আসে"""
     headers = {
         "Authorization": f"Bearer {ZYLA_API_KEY}",
         "Content-Type": "application/json",
     }
     payload = json.dumps({"url": fb_url})
-
     try:
         response = requests.post(ZYLA_API_URL, headers=headers, data=payload, timeout=30)
         response.raise_for_status()
@@ -79,144 +70,297 @@ def fetch_video_data(fb_url: str) -> dict:
 
 
 def format_duration(ms: int) -> str:
-    """মিলিসেকেন্ড থেকে মিনিট:সেকেন্ড ফরম্যাটে কনভার্ট করে"""
     if not ms:
-        return "Unknown"
-    seconds = ms // 1000
-    minutes = seconds // 60
-    secs = seconds % 60
-    return f"{minutes}:{secs:02d}"
+        return "N/A"
+    total_seconds = ms // 1000
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    if hours > 0:
+        return f"{hours}h {minutes}m {seconds}s"
+    elif minutes > 0:
+        return f"{minutes}m {seconds}s"
+    else:
+        return f"{seconds}s"
 
 
-# ==================== Bot Command Handlers ====================
+def get_file_size_label(quality: str) -> str:
+    icons = {"HD": "🔵", "SD": "🟢", "Audio": "🟣"}
+    return icons.get(quality, "⚪")
+
+
+# ==================== Bot Commands ====================
+
+async def set_bot_commands(application):
+    commands = [
+        BotCommand("start", "Start the bot"),
+        BotCommand("help", "How to use this bot"),
+        BotCommand("about", "About this bot"),
+        BotCommand("supported", "Supported link types"),
+        BotCommand("stats", "Your usage stats"),
+        BotCommand("ping", "Check bot status"),
+    ]
+    await application.bot.set_my_commands(commands)
+
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start কমান্ড হ্যান্ডলার"""
+    user = update.effective_user
+    first_name = user.first_name or "User"
+
+    # Initialize user stats
+    if "downloads" not in context.user_data:
+        context.user_data["downloads"] = 0
+        context.user_data["joined"] = time.strftime("%Y-%m-%d")
+
     welcome_text = (
-        "🎬 **Facebook Video Downloader Bot**\n\n"
-        "স্বাগতম! আমি Facebook ভিডিও ডাউনলোড করতে সাহায্য করি।\n\n"
-        "📌 **কিভাবে ব্যবহার করবেন:**\n"
-        "যেকোনো Facebook ভিডিও/Reel এর লিংক পাঠান, আমি আপনাকে "
-        "HD ও SD কোয়ালিটিতে ডাউনলোড লিংক দেবো।\n\n"
-        "🔗 **সাপোর্টেড লিংক:**\n"
-        "• Facebook Video\n"
-        "• Facebook Reel\n"
-        "• Facebook Watch\n"
-        "• fb.watch short links\n\n"
-        "👇 এখন একটি Facebook ভিডিও লিংক পাঠান!"
+        f"Hey **{first_name}**! 👋\n\n"
+        f"Welcome to **Facebook Video Downloader** 🎬\n\n"
+        f"I can download videos, reels & audio from Facebook in just seconds.\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔹 Send me any Facebook video link\n"
+        f"🔹 Choose your preferred quality\n"
+        f"🔹 Get your video instantly!\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"💡 Type /help for detailed instructions.\n\n"
+        f"⚡ Powered by {BOT_USERNAME}"
     )
-    await update.message.reply_text(welcome_text, parse_mode="Markdown")
+
+    keyboard = [
+        [
+            InlineKeyboardButton("📖 How to Use", callback_data="cb_help"),
+            InlineKeyboardButton("📋 Supported Links", callback_data="cb_supported"),
+        ],
+        [
+            InlineKeyboardButton("ℹ️ About", callback_data="cb_about"),
+        ],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        welcome_text, parse_mode="Markdown", reply_markup=reply_markup
+    )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Help কমান্ড হ্যান্ডলার"""
     help_text = (
-        "❓ **সাহায্য**\n\n"
-        "📌 **কমান্ড সমূহ:**\n"
-        "/start - বট শুরু করুন\n"
-        "/help - সাহায্য দেখুন\n\n"
-        "📌 **ব্যবহার পদ্ধতি:**\n"
-        "1️⃣ Facebook থেকে ভিডিওর লিংক কপি করুন\n"
-        "2️⃣ এই বটে লিংকটি পেস্ট করে পাঠান\n"
-        "3️⃣ HD বা SD কোয়ালিটি সিলেক্ট করুন\n"
-        "4️⃣ ভিডিও আপনার কাছে চলে আসবে!\n\n"
-        "⚠️ **দ্রষ্টব্য:**\n"
-        "• শুধুমাত্র পাবলিক ভিডিও ডাউনলোড করা যাবে\n"
-        "• প্রাইভেট ভিডিও ডাউনলোড সম্ভব নয়"
+        "📖 **How to Use**\n\n"
+        "Downloading a Facebook video is super easy:\n\n"
+        "**Step 1️⃣** — Open Facebook & find the video you want\n"
+        "**Step 2️⃣** — Tap `Share` → `Copy Link`\n"
+        "**Step 3️⃣** — Paste the link here in chat\n"
+        "**Step 4️⃣** — Select quality (HD / SD / Audio)\n"
+        "**Step 5️⃣** — Done! Your file will be sent 🎉\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📌 **Commands:**\n"
+        "/start — Start the bot\n"
+        "/help — How to use\n"
+        "/about — About this bot\n"
+        "/supported — Supported link types\n"
+        "/stats — Your download stats\n"
+        "/ping — Check if bot is alive\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "⚠️ **Note:** Only public videos can be downloaded. "
+        "Private or restricted videos are not supported.\n\n"
+        f"⚡ {BOT_USERNAME}"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
 
+async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    about_text = (
+        "ℹ️ **About This Bot**\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🤖 **Bot:** {BOT_USERNAME}\n"
+        "📌 **Version:** 2.0\n"
+        "🔧 **Language:** Python\n"
+        "🌐 **API:** ZylaLabs\n"
+        "☁️ **Hosted on:** Render\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🎯 **Features:**\n"
+        "├ 📹 Download FB Videos\n"
+        "├ 🎞️ Download FB Reels\n"
+        "├ 🔵 HD Quality Support\n"
+        "├ 🟢 SD Quality Support\n"
+        "├ 🎵 Audio Extraction\n"
+        "├ 🖼️ Thumbnail Preview\n"
+        "├ ⚡ Fast & Reliable\n"
+        "└ 🆓 Completely Free\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Made with ❤️ by the developer.\n"
+        f"⚡ {BOT_USERNAME}"
+    )
+    await update.message.reply_text(about_text, parse_mode="Markdown")
+
+
+async def supported_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    supported_text = (
+        "📋 **Supported Link Types**\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "✅ **Supported:**\n"
+        "├ 🔗 `facebook.com/watch/...`\n"
+        "├ 🔗 `facebook.com/reel/...`\n"
+        "├ 🔗 `facebook.com/video/...`\n"
+        "├ 🔗 `facebook.com/share/v/...`\n"
+        "├ 🔗 `fb.watch/...`\n"
+        "├ 🔗 `m.facebook.com/...`\n"
+        "└ 🔗 `web.facebook.com/...`\n\n"
+        "❌ **Not Supported:**\n"
+        "├ 🚫 Private videos\n"
+        "├ 🚫 Live streams (ongoing)\n"
+        "├ 🚫 Stories\n"
+        "└ 🚫 Videos from other platforms\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "💡 **Tip:** Make sure the video is set to `Public` "
+        "before copying the link.\n\n"
+        f"⚡ {BOT_USERNAME}"
+    )
+    await update.message.reply_text(supported_text, parse_mode="Markdown")
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    first_name = user.first_name or "User"
+    downloads = context.user_data.get("downloads", 0)
+    joined = context.user_data.get("joined", "Today")
+
+    stats_text = (
+        "📊 **Your Stats**\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 **User:** {first_name}\n"
+        f"🆔 **ID:** `{user.id}`\n"
+        f"📅 **First Used:** {joined}\n"
+        f"📥 **Downloads:** {downloads}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Keep downloading! 🚀\n\n"
+        f"⚡ {BOT_USERNAME}"
+    )
+    await update.message.reply_text(stats_text, parse_mode="Markdown")
+
+
+async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    start_time = time.time()
+    msg = await update.message.reply_text("🏓 Pinging...")
+    end_time = time.time()
+    latency = round((end_time - start_time) * 1000)
+
+    ping_text = (
+        "🏓 **Pong!**\n\n"
+        f"⚡ **Response Time:** `{latency}ms`\n"
+        f"🟢 **Status:** Online\n"
+        f"🕐 **Server Time:** `{time.strftime('%H:%M:%S UTC')}`\n\n"
+        f"Bot is running smoothly! ✅"
+    )
+    await msg.edit_text(ping_text, parse_mode="Markdown")
+
+
+# ==================== Message Handler ====================
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ইউজারের পাঠানো মেসেজ হ্যান্ডলার"""
     user_text = update.message.text.strip()
 
-    # চেক করো এটা Facebook URL কিনা
     if not is_facebook_url(user_text):
         await update.message.reply_text(
-            "❌ এটি একটি বৈধ Facebook লিংক নয়!\n\n"
-            "✅ দয়া করে একটি Facebook ভিডিও/Reel এর লিংক পাঠান।\n"
-            "যেমন: `https://www.facebook.com/reel/569975832234512`",
+            "🚫 **Invalid Link!**\n\n"
+            "That doesn't look like a Facebook link.\n"
+            "Please send a valid Facebook video or reel URL.\n\n"
+            "💡 **Example:**\n"
+            "`https://www.facebook.com/reel/569975832234512`\n\n"
+            "Type /supported to see all supported link types.",
             parse_mode="Markdown",
         )
         return
 
-    # Processing মেসেজ পাঠাও
+    # Initialize stats
+    if "downloads" not in context.user_data:
+        context.user_data["downloads"] = 0
+        context.user_data["joined"] = time.strftime("%Y-%m-%d")
+
     processing_msg = await update.message.reply_text(
-        "⏳ ভিডিও খোঁজা হচ্ছে... দয়া করে অপেক্ষা করুন।"
+        "🔍 **Processing your link...**\n\n"
+        "⏳ Fetching video details, please wait."
+        , parse_mode="Markdown"
     )
 
-    # API থেকে ডাটা আনো
     data = fetch_video_data(user_text)
 
     if not data or data.get("error", True):
         await processing_msg.edit_text(
-            "❌ ভিডিও খুঁজে পাওয়া যায়নি!\n\n"
-            "সম্ভাব্য কারণ:\n"
-            "• ভিডিওটি প্রাইভেট হতে পারে\n"
-            "• লিংকটি ভুল হতে পারে\n"
-            "• ভিডিওটি মুছে ফেলা হয়েছে"
+            "❌ **Video Not Found!**\n\n"
+            "Possible reasons:\n"
+            "├ 🔒 The video is private\n"
+            "├ 🗑️ The video has been deleted\n"
+            "├ 🔗 The link is broken or invalid\n"
+            "└ 🌐 Network issue on server side\n\n"
+            "💡 Please check the link and try again.",
+            parse_mode="Markdown",
         )
         return
 
-    # ভিডিও তথ্য সংগ্রহ করো
-    title = data.get("title", "Facebook Video")
+    title = data.get("title", "Untitled Video")
     author = data.get("author", "Unknown")
     duration = format_duration(data.get("duration", 0))
     thumbnail = data.get("thumbnail", "")
     medias = data.get("medias", [])
 
-    # ভিডিও ও অডিও আলাদা করো
     videos = [m for m in medias if m.get("type") == "video"]
     audios = [m for m in medias if m.get("type") == "audio"]
 
-    if not videos:
-        await processing_msg.edit_text("❌ ভিডিও ডাউনলোড লিংক পাওয়া যায়নি!")
+    if not videos and not audios:
+        await processing_msg.edit_text(
+            "❌ **No downloadable media found!**\n\n"
+            "The link was recognized but no video/audio could be extracted.",
+            parse_mode="Markdown",
+        )
         return
 
-    # Context এ ডাটা সেভ করো (কলব্যাক এর জন্য)
     context.user_data["video_data"] = {
         "title": title,
         "author": author,
         "videos": videos,
         "audios": audios,
         "thumbnail": thumbnail,
+        "url": user_text,
     }
 
-    # ইনলাইন কীবোর্ড তৈরি করো
+    # Build keyboard
     keyboard = []
     for i, video in enumerate(videos):
         quality = video.get("quality", "Unknown")
-        extension = video.get("extension", "mp4")
-        btn_text = f"📹 {quality} ({extension.upper()})"
+        ext = video.get("extension", "mp4").upper()
+        icon = get_file_size_label(quality)
+        btn_text = f"{icon} {quality} Quality ({ext})"
         keyboard.append(
             [InlineKeyboardButton(btn_text, callback_data=f"video_{i}")]
         )
 
-    # অডিও বাটন যোগ করো
     for i, audio in enumerate(audios):
-        quality = audio.get("quality", "Audio")
-        extension = audio.get("extension", "mp3")
-        btn_text = f"🎵 {quality} ({extension.upper()})"
+        ext = audio.get("extension", "mp3").upper()
+        btn_text = f"🎵 Audio Only ({ext})"
         keyboard.append(
             [InlineKeyboardButton(btn_text, callback_data=f"audio_{i}")]
         )
 
+    # Add download all via link button
+    if videos:
+        keyboard.append(
+            [InlineKeyboardButton("🔗 Open on Facebook", url=user_text)]
+        )
+
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # তথ্য সহ রিপ্লাই দাও
     info_text = (
-        f"✅ **ভিডিও পাওয়া গেছে!**\n\n"
-        f"📌 **শিরোনাম:** {title}\n"
-        f"👤 **লেখক:** {author}\n"
-        f"⏱ **সময়কাল:** {duration}\n\n"
-        f"👇 নিচে থেকে কোয়ালিটি সিলেক্ট করুন:"
+        "✅ **Video Found!**\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📌 **Title:** {title}\n"
+        f"👤 **Author:** {author}\n"
+        f"⏱️ **Duration:** {duration}\n"
+        f"📦 **Available Formats:** {len(videos)} video, {len(audios)} audio\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "👇 **Select your preferred quality below:**"
     )
 
-    # Processing মেসেজ ডিলিট করো
     await processing_msg.delete()
 
-    # থাম্বনেইল সহ পাঠাও
     if thumbnail:
         try:
             await update.message.reply_photo(
@@ -235,18 +379,101 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+# ==================== Callback Handler ====================
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ইনলাইন বাটন কলব্যাক হ্যান্ডলার"""
     query = update.callback_query
     await query.answer()
-
     data = query.data
+
+    # Handle info callbacks from start menu
+    if data == "cb_help":
+        help_text = (
+            "📖 **How to Use**\n\n"
+            "**Step 1️⃣** — Copy a Facebook video link\n"
+            "**Step 2️⃣** — Paste it here in chat\n"
+            "**Step 3️⃣** — Choose quality (HD / SD / Audio)\n"
+            "**Step 4️⃣** — Receive your file! 🎉\n\n"
+            "It's that simple! 😊\n\n"
+            f"⚡ {BOT_USERNAME}"
+        )
+        back_btn = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🔙 Back", callback_data="cb_back_start")]]
+        )
+        await query.edit_message_text(
+            help_text, parse_mode="Markdown", reply_markup=back_btn
+        )
+        return
+
+    if data == "cb_supported":
+        sup_text = (
+            "📋 **Supported Links**\n\n"
+            "✅ `facebook.com/watch/...`\n"
+            "✅ `facebook.com/reel/...`\n"
+            "✅ `facebook.com/video/...`\n"
+            "✅ `fb.watch/...`\n"
+            "✅ `m.facebook.com/...`\n\n"
+            "❌ Private / Stories / Live\n\n"
+            f"⚡ {BOT_USERNAME}"
+        )
+        back_btn = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🔙 Back", callback_data="cb_back_start")]]
+        )
+        await query.edit_message_text(
+            sup_text, parse_mode="Markdown", reply_markup=back_btn
+        )
+        return
+
+    if data == "cb_about":
+        about_text = (
+            "ℹ️ **About**\n\n"
+            f"🤖 {BOT_USERNAME}\n"
+            "📌 Version: 2.0\n"
+            "🆓 Free & Open Source\n\n"
+            "Features: HD/SD Video, Audio, Fast Downloads\n\n"
+            "Made with ❤️"
+        )
+        back_btn = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🔙 Back", callback_data="cb_back_start")]]
+        )
+        await query.edit_message_text(
+            about_text, parse_mode="Markdown", reply_markup=back_btn
+        )
+        return
+
+    if data == "cb_back_start":
+        user = update.effective_user
+        first_name = user.first_name or "User"
+        welcome_text = (
+            f"Hey **{first_name}**! 👋\n\n"
+            f"Welcome to **Facebook Video Downloader** 🎬\n\n"
+            f"I can download videos, reels & audio from Facebook in just seconds.\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔹 Send me any Facebook video link\n"
+            f"🔹 Choose your preferred quality\n"
+            f"🔹 Get your video instantly!\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"💡 Type /help for detailed instructions.\n\n"
+            f"⚡ Powered by {BOT_USERNAME}"
+        )
+        keyboard = [
+            [
+                InlineKeyboardButton("📖 How to Use", callback_data="cb_help"),
+                InlineKeyboardButton("📋 Supported Links", callback_data="cb_supported"),
+            ],
+            [InlineKeyboardButton("ℹ️ About", callback_data="cb_about")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            welcome_text, parse_mode="Markdown", reply_markup=reply_markup
+        )
+        return
+
+    # Handle video/audio download callbacks
     video_data = context.user_data.get("video_data")
 
     if not video_data:
-        await query.edit_message_caption(
-            caption="❌ সেশন শেষ হয়ে গেছে। দয়া করে আবার লিংক পাঠান।"
-        )
+        await query.answer("⚠️ Session expired! Please send the link again.", show_alert=True)
         return
 
     download_url = None
@@ -266,27 +493,46 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         audios = video_data.get("audios", [])
         if index < len(audios):
             download_url = audios[index]["url"]
-            quality = audios[index].get("quality", "Audio")
+            quality = "Audio"
             media_type = "audio"
 
     if not download_url:
-        await query.edit_message_caption(
-            caption="❌ ডাউনলোড লিংক পাওয়া যায়নি!"
-        )
+        await query.answer("❌ Download link not found!", show_alert=True)
         return
 
-    # ডাউনলোড স্ট্যাটাস
-    await query.edit_message_caption(
-        caption=f"⬇️ **{quality}** কোয়ালিটিতে পাঠানো হচ্ছে... অপেক্ষা করুন।",
-        parse_mode="Markdown",
-    )
+    icon = get_file_size_label(quality) if media_type == "video" else "🎵"
 
     try:
+        # Update caption to show downloading status
+        try:
+            await query.edit_message_caption(
+                caption=(
+                    f"⬇️ **Downloading {quality}...**\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"{icon} Quality: **{quality}**\n"
+                    f"📌 {video_data['title']}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"⏳ Uploading to Telegram, please wait..."
+                ),
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+
         if media_type == "video":
             await context.bot.send_video(
                 chat_id=query.message.chat_id,
                 video=download_url,
-                caption=f"✅ {video_data['title']}\n📹 কোয়ালিটি: {quality}\n\n🤖 @YourBotUsername",
+                caption=(
+                    f"✅ **Download Complete!**\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📌 {video_data['title']}\n"
+                    f"👤 {video_data['author']}\n"
+                    f"{icon} Quality: **{quality}**\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"⚡ {BOT_USERNAME}"
+                ),
+                parse_mode="Markdown",
                 supports_streaming=True,
                 read_timeout=120,
                 write_timeout=120,
@@ -296,73 +542,133 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_audio(
                 chat_id=query.message.chat_id,
                 audio=download_url,
-                caption=f"✅ {video_data['title']}\n🎵 Audio\n\n🤖 @YourBotUsername",
+                caption=(
+                    f"✅ **Download Complete!**\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📌 {video_data['title']}\n"
+                    f"🎵 Format: Audio\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"⚡ {BOT_USERNAME}"
+                ),
+                parse_mode="Markdown",
                 read_timeout=120,
                 write_timeout=120,
                 connect_timeout=60,
             )
 
-        await query.edit_message_caption(
-            caption=f"✅ **সফলভাবে পাঠানো হয়েছে!**\n\n📹 কোয়ালিটি: {quality}",
-            parse_mode="Markdown",
-        )
+        # Update download count
+        context.user_data["downloads"] = context.user_data.get("downloads", 0) + 1
+
+        # Update the original message
+        try:
+            await query.edit_message_caption(
+                caption=(
+                    f"✅ **Sent Successfully!**\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📌 {video_data['title']}\n"
+                    f"{icon} Quality: **{quality}**\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"📥 Total Downloads: {context.user_data['downloads']}\n\n"
+                    f"Send another link to download more! 🔗"
+                ),
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
 
     except Exception as e:
         logger.error(f"Send error: {e}")
-        # যদি সরাসরি পাঠাতে না পারে, ডাউনলোড লিংক দাও
-        fallback_keyboard = InlineKeyboardMarkup(
-            [[InlineKeyboardButton(f"⬇️ {quality} ডাউনলোড করুন", url=download_url)]]
-        )
-        await query.edit_message_caption(
-            caption=(
-                f"⚠️ ভিডিও সাইজ বড় হওয়ায় সরাসরি পাঠানো যাচ্ছে না।\n"
-                f"নিচের বাটনে ক্লিক করে ডাউনলোড করুন।\n\n"
-                f"📹 কোয়ালিটি: {quality}"
-            ),
-            reply_markup=fallback_keyboard,
-            parse_mode="Markdown",
-        )
 
+        fallback_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"⬇️ Download {quality}", url=download_url)],
+            [InlineKeyboardButton("🔗 Open on Facebook", url=video_data.get("url", ""))],
+        ])
+
+        try:
+            await query.edit_message_caption(
+                caption=(
+                    f"⚠️ **File Too Large for Telegram!**\n\n"
+                    f"The {quality} file exceeds Telegram's 50MB limit.\n"
+                    f"Use the button below to download directly.\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📌 {video_data['title']}\n"
+                    f"{icon} Quality: **{quality}**\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"⚡ {BOT_USERNAME}"
+                ),
+                reply_markup=fallback_keyboard,
+                parse_mode="Markdown",
+            )
+        except Exception:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=(
+                    f"⚠️ **File Too Large!**\n\n"
+                    f"Use the button below to download directly.\n"
+                ),
+                reply_markup=fallback_keyboard,
+                parse_mode="Markdown",
+            )
+
+
+# ==================== Error Handler ====================
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Error হ্যান্ডলার"""
-    logger.error(f"Update {update} caused error {context.error}")
+    logger.error(f"Error: {context.error}")
+    if update and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                "⚠️ **Oops! Something went wrong.**\n\n"
+                "Please try again later or send a different link.\n\n"
+                f"⚡ {BOT_USERNAME}",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
 
 
-# ==================== Main Function ====================
+# ==================== Post Init ====================
+
+async def post_init(application):
+    await set_bot_commands(application)
+    logger.info("✅ Bot commands have been set!")
+
+
+# ==================== Main ====================
 
 def main():
-    """বট চালু করো"""
     if not TELEGRAM_BOT_TOKEN:
-        logger.error("❌ TELEGRAM_BOT_TOKEN সেট করা হয়নি!")
+        logger.error("TELEGRAM_BOT_TOKEN is not set!")
         return
 
-    # Flask সার্ভার আলাদা থ্রেডে চালাও (Render এর জন্য)
+    # Start Flask in background
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    logger.info(f"✅ Flask server started on port {PORT}")
+    logger.info(f"Flask server started on port {PORT}")
 
-    # Bot Application তৈরি করো
+    # Build application
     application = (
         Application.builder()
         .token(TELEGRAM_BOT_TOKEN)
         .read_timeout(120)
         .write_timeout(120)
         .connect_timeout(60)
+        .post_init(post_init)
         .build()
     )
 
-    # Handlers যোগ করো
+    # Add handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
-    )
+    application.add_handler(CommandHandler("about", about_command))
+    application.add_handler(CommandHandler("supported", supported_command))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("ping", ping_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_error_handler(error_handler)
 
-    # Bot চালু করো
-    logger.info("✅ Bot is starting...")
+    logger.info("🚀 Bot is starting...")
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
